@@ -208,12 +208,12 @@ int main(int argc, char const *argv[]) {
     }
 
     if (countAgents < 1 || countAgents > 4) {
-        fprintf(stderr, "Sales agent count must be greater than zero.\n");
+        fprintf(stderr, "Sales agent count must be between 1 and 4.\n");
         return EXIT_FAILURE;
     }
 
     if (countCustomers < 1 || countCustomers > 10) {
-        fprintf(stderr, "Customer count must be greater than zero.\n");
+        fprintf(stderr, "Customer count must be between 1 and 10.\n");
         return EXIT_FAILURE;
     }
 
@@ -1576,4 +1576,3 @@ void readArguments(int *countProducts, int *countAgents, int *countCustomers, in
         printf("Argument 3 is not a valid integer.\n");
     }
 }
-
