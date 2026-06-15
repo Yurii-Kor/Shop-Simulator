@@ -1,0 +1,9 @@
+# Local build output
+shop-simulator
+*.o
+
+# Runtime-generated IPC token
+.runtime/
+
+# Simulation output
+simulation.log
