@@ -19,11 +19,9 @@
 static const char *const IPC_RUNTIME_DIR = ".runtime";
 static const char *const IPC_TOKEN_FILE = ".runtime/ipc.token";
 
-struct readersWritersState {
+struct readersState {
     int buyingBoardReaders;
-    int buyingBoardWaitingWriters;
     int productReaders;
-    int productWaitingWriters;
 };
 
 
@@ -34,17 +32,17 @@ void removeSemaphore(int semid, const char *semName);
 void lock(int semid, const char *semName);
 void unlock(int semid, const char *semName);
 
-void writerLock(int semidOrder, const char *orderDeskription,
-                int semidAccess, const char *accessDeskription,
-                int semidLockWriters, const char *lockWritersDeskription,
-                int *waitingWriters);
+void writerLock(
+    int semidOrder,  const char *orderDeskription,
+    int semidAccess, const char *accessDeskription
+);
 
-void readerLock(int semidOrder, const char *orderDeskription,
-                int semidReaders, const char *readersDeskription,
-                int semidAccess, const char *accessDeskription,
-                int semidLockWriters, const char *lockWritersDeskription,
-                int *countReaders,
-                int *waitingWriters);
+void readerLock(
+    int semidOrder,   const char *orderDeskription,
+    int semidReaders, const char *readersDeskription,
+    int semidAccess,  const char *accessDeskription,
+    int *countReaders
+);
 
 void readerUnlock(int semidReaders, const char *readersDeskription,
                   int semidAccess, const char *accessDeskription,
@@ -96,9 +94,6 @@ struct readBuyingBoardsRequest {
     char *readersDeskription;
     int semidOrder;
     char *orderDeskription;
-    int semidWriters;
-    const char *writersDeskription;
-    int *countWriters;
     int *countReaders;
     int *countBoards;
     int *currentCountBoards;
@@ -114,10 +109,6 @@ struct updateBuyingBoardsRequest {
     char *accessDeskription;
     int semidOrder;
     char *orderDeskription;
-    int semidLockWriters;
-    const char *lockWritersDeskription;
-    int *countWriters;
-    int *currentCountBoards;
     int itemId;
     int amountOrder;
     int *notDoneBoardId;
@@ -136,9 +127,6 @@ struct readMenuRequest {
     char *readersDeskription;
     int semidOrder;
     char *orderDeskription;
-    int semidWriters;
-    const char *writersDeskription;
-    int *countWriters;
     int *countReaders;
     int *countProducts;
     struct item *currentProducts;
@@ -152,9 +140,6 @@ struct UpdateProductsRequest {
     char *accessDeskription;
     int semidOrder;
     char *orderDeskription;
-    int semidLockWriters;
-    const char *lockWritersDeskription;
-    int *countWriters;
     int *countProducts;
     int itemId;
     int amountOrder;
@@ -242,15 +227,13 @@ int main(int argc, char const *argv[]) {
     key_t keyAccessBuyingBoard = getKey(IPC_TOKEN_FILE, 152);
     key_t keyReadersBuyingBoard = getKey(IPC_TOKEN_FILE, 153);
     key_t keyOrderBuyingBoard = getKey(IPC_TOKEN_FILE, 154);
-    key_t keyWritersBuyingBoard = getKey(IPC_TOKEN_FILE, 155);
 
     key_t keyProducts = getKey(IPC_TOKEN_FILE, 160);
     key_t keyAccessProducts = getKey(IPC_TOKEN_FILE, 161);
     key_t keyReadersProducts = getKey(IPC_TOKEN_FILE, 162);
     key_t keyOrderProducts = getKey(IPC_TOKEN_FILE, 163);
-    key_t keyWritersProducts = getKey(IPC_TOKEN_FILE, 164);
 
-    key_t keyReadersWritersState = getKey(IPC_TOKEN_FILE, 170);
+    key_t keyReadersState = getKey(IPC_TOKEN_FILE, 170);
 
     printf("\nProject info:\n\nCustomers       : %2d persons\nSales Agent     : %2d persons\nCount Products  : %2d items\nSimulation time : %2d sec\n\n",
                         countCustomers, countAgents, countProducts, simulationTime);
@@ -306,52 +289,45 @@ int main(int argc, char const *argv[]) {
 
     memcpy(shared_memory_CountBoards, &countBoards, sizeof(int));
 
-    int shmidReadersWritersState = shmget(
-        keyReadersWritersState,
-        sizeof(struct readersWritersState),
+    int shmidReadersState = shmget(
+        keyReadersState,
+        sizeof(struct readersState),
         IPC_CREAT | 0666
     );
 
-    if (shmidReadersWritersState == -1) {
-        perror("shmget_create_ReadersWritersState");
+    if (shmidReadersState == -1) {
+        perror("shmget_create_readersState");
         exit(EXIT_FAILURE);
     }
 
-    struct readersWritersState *shared_memory_ReadersWritersState =
-        (struct readersWritersState *)shmat(
-            shmidReadersWritersState,
+    struct readersState *shared_memory_readersState =
+        (struct readersState *)shmat(
+            shmidReadersState,
             NULL,
             0
         );
 
-    if (shared_memory_ReadersWritersState == (void *)-1) {
-        perror("shmat_ReadersWritersState");
+    if (shared_memory_readersState == (void *)-1) {
+        perror("shmat_readersState");
         exit(EXIT_FAILURE);
     }
 
     memset(
-        shared_memory_ReadersWritersState,
+        shared_memory_readersState,
         0,
-        sizeof(*shared_memory_ReadersWritersState)
+        sizeof(*shared_memory_readersState)
     );
 
     int *countReadersBuyingBoard =
-        &shared_memory_ReadersWritersState->buyingBoardReaders;
-
-    int *countWritersBuyingBoard =
-        &shared_memory_ReadersWritersState->buyingBoardWaitingWriters;
+        &shared_memory_readersState->buyingBoardReaders;
 
     int *countReadersProducts =
-        &shared_memory_ReadersWritersState->productReaders;
-
-    int *countWritersProducts =
-        &shared_memory_ReadersWritersState->productWaitingWriters;
+        &shared_memory_readersState->productReaders;
 
         //  Semaphores :
     int semidAccessBuyingBoard  = createSemaphore(keyAccessBuyingBoard, "AccessBuyingBoard");
     int semidReadersBuyingBoard = createSemaphore(keyReadersBuyingBoard, "ReadersBuyingBoard");
     int semidOrderBuyingBoard   = createSemaphore(keyOrderBuyingBoard, "OrderBuyingBoard");
-    int semidWritersBuyingBoard = createSemaphore(keyWritersBuyingBoard, "WritersBuyingBoard");
 
     //=========Products==================================================
         //  Intialize :
@@ -378,7 +354,6 @@ int main(int argc, char const *argv[]) {
     int semidAccessProducts  = createSemaphore(keyAccessProducts, "AccessProducts");
     int semidReadersProducts = createSemaphore(keyReadersProducts, "ReadersProducts");
     int semidOrderProducts   = createSemaphore(keyOrderProducts, "OrderProducts");
-    int semidWritersProducts = createSemaphore(keyWritersProducts, "WritersProducts");
 
     //========Check shared memory=====================================
 
@@ -444,9 +419,6 @@ int main(int argc, char const *argv[]) {
                             request0->readersDeskription = "ReadersProducts_readMenu";
                             request0->semidOrder = semidOrderProducts;
                             request0->orderDeskription = "OrderProducts_readMenu";
-                            request0->semidWriters = semidWritersProducts;
-                            request0->writersDeskription = "WritersProducts_readMenu";
-                            request0->countWriters = countWritersProducts;
                             request0->countReaders = countReadersProducts;
 
                             request0->countProducts = &countProducts;
@@ -484,9 +456,6 @@ int main(int argc, char const *argv[]) {
                             request1->readersDeskription = "ReadersBuyingBoards_readBuyingBoards";
                             request1->semidOrder = semidOrderBuyingBoard;
                             request1->orderDeskription = "OrderBuyingBoards_readBuyingBoards";
-                            request1->semidWriters = semidWritersBuyingBoard;
-                            request1->writersDeskription = "WritersBuyingBoards_readBuyingBoards";
-                            request1->countWriters = countWritersBuyingBoard;
                             request1->countReaders = countReadersBuyingBoard;
 
                             request1->countBoards = shared_memory_CountBoards;
@@ -545,13 +514,9 @@ int main(int argc, char const *argv[]) {
                             request2->accessDeskription = "AccessBuyingBoards_addBuyingBoard";
                             request2->semidOrder = semidOrderBuyingBoard;
                             request2->orderDeskription = "OrderBuyingBoards_addBuyingBoard";
-                            request2->semidLockWriters = semidWritersBuyingBoard;
-                            request2->lockWritersDeskription = "LockWritersBuyingBoards_addBuyingBoard";
-                            request2->countWriters = countWritersBuyingBoard;
 
                             request2->itemId = randomItem;
                             request2->amountOrder = randomAmount;
-                            request2->currentCountBoards = &countBoards;
 
                             request2->shared_memory_CountBoards = shared_memory_CountBoards;
                             request2->shared_memory_BuyingBoard = shared_memory_BuyingBoard;
@@ -619,9 +584,6 @@ int main(int argc, char const *argv[]) {
                             request0->accessDeskription = "AccessProducts_updateProducts";
                             request0->semidOrder = semidOrderProducts;
                             request0->orderDeskription = "OrderProducts_updateProducts";
-                            request0->semidLockWriters = semidWritersProducts;
-                            request0->lockWritersDeskription = "LockWritersProducts_updateProducts";
-                            request0->countWriters = countWritersProducts;
 
                             request0->countProducts = &countProducts;
                             request0->itemId = notDoneItemId;
@@ -657,9 +619,6 @@ int main(int argc, char const *argv[]) {
                             request1->readersDeskription = "ReadersBuyingBoards_readBuyingBoards";
                             request1->semidOrder = semidOrderBuyingBoard;
                             request1->orderDeskription = "OrderBuyingBoards_readBuyingBoards";
-                            request1->semidWriters = semidWritersBuyingBoard;
-                            request1->writersDeskription = "WritersBuyingBoards_readBuyingBoards";
-                            request1->countWriters = countWritersBuyingBoard;
                             request1->countReaders = countReadersBuyingBoard;
 
                             request1->countBoards = shared_memory_CountBoards;
@@ -703,9 +662,6 @@ int main(int argc, char const *argv[]) {
                             request2->accessDeskription = "AccessBuyingBoards_makeDone";
                             request2->semidOrder = semidOrderBuyingBoard;
                             request2->orderDeskription = "OrderBuyingBoards_makeDone";
-                            request2->semidLockWriters = semidWritersBuyingBoard;
-                            request2->lockWritersDeskription = "LockWritersBuyingBoards_makeDone";
-                            request2->countWriters = countWritersBuyingBoard;
 
                             request2->notDoneBoardId = &notDoneBoardId;
                             request2->notDoneAmount = &notDoneAmount;
@@ -801,17 +757,15 @@ int main(int argc, char const *argv[]) {
     shmctl(shmidProducts, IPC_RMID, NULL);
     shmdt(shared_memory_CountBoards);
     shmctl(shmidCountBoards, IPC_RMID, NULL);
-    shmdt(shared_memory_ReadersWritersState);
-    shmctl(shmidReadersWritersState, IPC_RMID, NULL);
+    shmdt(shared_memory_readersState);
+    shmctl(shmidReadersState, IPC_RMID, NULL);
 
     removeSemaphore(semidAccessProducts,    "rm_AccessProducts");
     removeSemaphore(semidReadersProducts,   "rm_ReadersProducts");
     removeSemaphore(semidOrderProducts,     "rm_OrderProducts");
-    removeSemaphore(semidWritersProducts,   "rm_kWritersProducts");
     removeSemaphore(semidAccessBuyingBoard, "rm_AccessBuyingBoard");
     removeSemaphore(semidReadersBuyingBoard,"rm_ReadersBuyingBoard");
     removeSemaphore(semidOrderBuyingBoard,  "rm_OrderBuyingBoard");
-    removeSemaphore(semidWritersBuyingBoard,"rm_WritersBuyingBoard");
 
     free(childPIDs);
 
@@ -911,24 +865,13 @@ void unlock(int semid, const char *semName) {
 }
 
 void writerLock(
-    int semidOrder,   const char *orderDeskription,
-    int semidAccess,  const char *accessDeskription,
-    int semidWriters, const char *writersDeskription,
-    int *waitingWriters
+    int semidOrder,  const char *orderDeskription,
+    int semidAccess, const char *accessDeskription
 ) {
     /*
-     * These parameters belong to the previous waiting-writers protocol.
-     * They are kept temporarily to avoid changing all call sites before
-     * the new synchronization scheme is verified.
-     */
-    (void)semidWriters;
-    (void)writersDeskription;
-    (void)waitingWriters;
-
-    /*
      * Close the turnstile before waiting for exclusive access.
-     * Existing readers can still leave through readerUnlock(), while
-     * new readers cannot enter ahead of this writer.
+     * Existing readers may leave, while new readers cannot
+     * bypass the waiting writer.
      */
     lock(semidOrder, orderDeskription);
     lock(semidAccess, accessDeskription);
@@ -939,18 +882,8 @@ void readerLock(
     int semidOrder,   const char *orderDeskription,
     int semidReaders, const char *readersDeskription,
     int semidAccess,  const char *accessDeskription,
-    int semidWriters, const char *writersDeskription,
-    int *countReaders,
-    int *waitingWriters
+    int *countReaders
 ) {
-    /*
-     * These parameters belong to the previous waiting-writers protocol.
-     * They will be removed after the new scheme is tested.
-     */
-    (void)semidWriters;
-    (void)writersDeskription;
-    (void)waitingWriters;
-
     lock(semidOrder, orderDeskription);
     lock(semidReaders, readersDeskription);
 
@@ -1242,9 +1175,6 @@ void* thread_readMenu(void* arg) {
     char* readersDeskription = args->readersDeskription;
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
-    int semidWriters = args->semidWriters;
-    const char *writersDeskription = args->writersDeskription;
-    int *waitingWriters = args->countWriters;
     int* countReaders = args->countReaders;
 
     int* countProducts = args->countProducts;
@@ -1256,9 +1186,7 @@ void* thread_readMenu(void* arg) {
         semidOrder, orderDeskription,
         semidReaders, readersDeskription,
         semidAccess, accessDeskription,
-        semidWriters, writersDeskription,
-        countReaders,
-        waitingWriters
+        countReaders
     );
 
     printf("%8.4f sec :     thread : Customer id: %d : I'm going to read the menu | pid = %d, ppid = %d\n",
@@ -1286,9 +1214,6 @@ void* thread_updateTotalOrders(void* arg) {
     char* accessDeskription = args->accessDeskription;
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
-    int semidLockWriters = args->semidLockWriters;
-    const char *lockWritersDeskription = args->lockWritersDeskription;
-    int *waitingWriters = args->countWriters;
     int* countProducts = args->countProducts;
     int itemId = args->itemId;
     int amountOrder = args->amountOrder;
@@ -1297,9 +1222,7 @@ void* thread_updateTotalOrders(void* arg) {
 
     // writer lock:
     writerLock(semidOrder, orderDeskription,
-               semidAccess, accessDeskription,
-               semidLockWriters, lockWritersDeskription,
-               waitingWriters);
+               semidAccess, accessDeskription);
 
     printf("%8.4f sec :     thread : Sales Agent id: %d : I'm going to update the total orders of the item : %d; amount : %d items | pid = %d, ppid = %d\n",
                     timer(start), id, itemId, amountOrder, getpid(), getppid());
@@ -1335,9 +1258,6 @@ void* thread_readBuyingBoards(void* arg) {
     char* readersDeskription = args->readersDeskription;
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
-    int semidWriters = args->semidWriters;
-    const char *writersDeskription = args->writersDeskription;
-    int *waitingWriters = args->countWriters;
     int* countReaders = args->countReaders;
 
     int *countBoards = args->countBoards;
@@ -1351,9 +1271,7 @@ void* thread_readBuyingBoards(void* arg) {
         semidOrder, orderDeskription,
         semidReaders, readersDeskription,
         semidAccess, accessDeskription,
-        semidWriters, writersDeskription,
-        countReaders,
-        waitingWriters
+        countReaders
     );
 
     printf("%8.4f sec :     thread : %s id: %d : I'm going to read Buying Boards | pid = %d, ppid = %d\n",
@@ -1384,9 +1302,6 @@ void* thread_addBuyingBoard(void* arg) {
     char* accessDeskription = args->accessDeskription;
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
-    int semidLockWriters = args->semidLockWriters;
-    const char *lockWritersDeskription = args->lockWritersDeskription;
-    int *waitingWriters = args->countWriters;
 
     int itemId = args->itemId;
     int amountOrder = args->amountOrder;
@@ -1397,9 +1312,7 @@ void* thread_addBuyingBoard(void* arg) {
 
     // writer lock:
     writerLock(semidOrder, orderDeskription,
-               semidAccess, accessDeskription,
-               semidLockWriters, lockWritersDeskription,
-               waitingWriters);
+               semidAccess, accessDeskription);
 
     printf("%8.4f sec :     thread : Customer id: %d : I'm going to add new Buying Board of the item : %d; amount : %d items | pid = %d, ppid = %d\n",
                     timer(start), id, itemId, amountOrder, getpid(), getppid());
@@ -1438,10 +1351,6 @@ void* thread_threadMakeDone(void* arg) {
     char* accessDeskription = args->accessDeskription;
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
-    int semidLockWriters = args->semidLockWriters;
-    const char* lockWritersDeskription =
-        args->lockWritersDeskription;
-    int* waitingWriters = args->countWriters;
 
     int* notDoneBoardId = args->notDoneBoardId;
     int* notDoneAmount = args->notDoneAmount;
@@ -1456,10 +1365,7 @@ void* thread_threadMakeDone(void* arg) {
         semidOrder,
         orderDeskription,
         semidAccess,
-        accessDeskription,
-        semidLockWriters,
-        lockWritersDeskription,
-        waitingWriters
+        accessDeskription
     );
 
     printf(
