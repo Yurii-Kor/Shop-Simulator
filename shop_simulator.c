@@ -167,12 +167,18 @@ void* thread_readBuyingBoards(void* arg);
 void* thread_addBuyingBoard(void* arg);
 void* thread_threadMakeDone(void* arg);
 
-//======== Sygnal for subprocess =================================
+//======== Signals =================================================
 volatile sig_atomic_t stop = 0;
-void signalHandler(int sig) {
+
+void childSignalHandler(int sig) {
     (void)sig;
     stop = 1;
 }
+
+void parentSignalHandler(int sig) {
+    (void)sig;
+}
+
 
 //======== Others =================================================
 void prepareIpcTokenFile(void);
@@ -262,11 +268,11 @@ int main(int argc, char const *argv[]) {
 
     //=========BuyingBoard==================================================
         //  Intialize :
-    int done;
+
     struct buyingBoard* buyingBoards = initializeBuyingBoards(&countBoards);
     for (int i = 0; i < countCustomers; i++) {
         buyingBoards = addBuyingBoard(buyingBoards, &countBoards, i, 1, 1);
-        done = makeDone(buyingBoards, &countBoards, i);
+        makeDone(buyingBoards, &countBoards, i);
     }
 
         //  Shared memory :
@@ -402,7 +408,7 @@ int main(int argc, char const *argv[]) {
     for (int j = 0; j < countCustomers; j++) {
         pid_t pid = fork();
         if (pid == 0) {
-            signal(SIGTERM, signalHandler);
+            signal(SIGTERM, childSignalHandler);
             srand(time(NULL) ^ getpid());
 
             int customerId = j;
@@ -418,11 +424,11 @@ int main(int argc, char const *argv[]) {
             struct buyingBoard* currentBuyingBoards  = (struct buyingBoard *)malloc(150 * sizeof(struct buyingBoard));;
             int isLastOrderDone;
 
-            struct buyingBoard* local_buyingBoards;
-
             while (!stop) {
                 int randomSleepTime = getRandomNum(3, 6);
                 if (customerFunction == 0) sleep(randomSleepTime);
+
+                if (stop) break;
 
                 switch (customerFunction) {
                     case 0:   // reader problem : read menu and choose item
@@ -566,7 +572,7 @@ int main(int argc, char const *argv[]) {
                     break;
                 }
             }
-            exit(0);
+            _exit(EXIT_SUCCESS);
         } else if (pid > 0) {
             childPIDs[childCount++] = pid;
             printf("Created Customer %d : pid = %d\n", j, pid);
@@ -581,7 +587,7 @@ int main(int argc, char const *argv[]) {
     for (int i = 0; i < countAgents; i++) {
         pid_t pid = fork();
         if (pid == 0) {
-            signal(SIGTERM, signalHandler);
+            signal(SIGTERM, childSignalHandler);
             srand(time(NULL) ^ getpid());
 
             int agentId = i;
@@ -598,6 +604,8 @@ int main(int argc, char const *argv[]) {
             while (!stop) {
                 int randomSleepTime = getRandomNum(1, 2);
                 if (agentFunction == 1) sleep(randomSleepTime);
+
+                if (stop) break;
 
                 switch (agentFunction) {
                     case 0:   // writer problem : update Total Orders
@@ -727,7 +735,7 @@ int main(int argc, char const *argv[]) {
                     break;
                 }
             }
-            exit(0);
+            _exit(EXIT_SUCCESS);
         } else if (pid > 0) {
             childPIDs[childCount++] = pid;
             printf("Created Sales Agent %d : pid = %d\n", i, pid);
@@ -738,7 +746,8 @@ int main(int argc, char const *argv[]) {
     }
 
     // Set up signal handling for the parent process to terminate child processes
-    signal(SIGINT, signalHandler);
+    signal(SIGINT, parentSignalHandler);
+    signal(SIGTERM, parentSignalHandler);
 
     sleep(simulationTime);
 
@@ -766,7 +775,7 @@ int main(int argc, char const *argv[]) {
     printf("Finish Time  :  ");
     struct timespec finish = getCurrentTime();
     double finalSemulationTime = timer(start);
-    printCurrentTime(start);
+    printCurrentTime(finish);
     printf("Final Time of the simulation : %f", finalSemulationTime);
     printf("\n\n");
 
@@ -901,42 +910,56 @@ void unlock(int semid, const char *semName) {
     }
 }
 
-void writerLock(int semidOrder, const char *orderDeskription,
-                int semidAccess, const char *accessDeskription,
-                int semidWriters, const char *writersDeskription,
-                int *waitingWriters) {
+void writerLock(
+    int semidOrder,   const char *orderDeskription,
+    int semidAccess,  const char *accessDeskription,
+    int semidWriters, const char *writersDeskription,
+    int *waitingWriters
+) {
+    /*
+     * These parameters belong to the previous waiting-writers protocol.
+     * They are kept temporarily to avoid changing all call sites before
+     * the new synchronization scheme is verified.
+     */
+    (void)semidWriters;
+    (void)writersDeskription;
+    (void)waitingWriters;
 
-    lock(semidWriters, writersDeskription);
-    increment(waitingWriters);
-    unlock(semidWriters, writersDeskription);
-
+    /*
+     * Close the turnstile before waiting for exclusive access.
+     * Existing readers can still leave through readerUnlock(), while
+     * new readers cannot enter ahead of this writer.
+     */
     lock(semidOrder, orderDeskription);
     lock(semidAccess, accessDeskription);
-
-    lock(semidWriters, writersDeskription);
-    decrement(waitingWriters);
-    unlock(semidWriters, writersDeskription);
-
     unlock(semidOrder, orderDeskription);
 }
 
-void readerLock(int semidOrder, const char *orderDeskription,
-                int semidReaders, const char *readersDeskription,
-                int semidAccess, const char *accessDeskription,
-                int semidWriters, const char *lockWritersDeskription,
-                int *countReaders, int *waitingWriters) { 
-    lock(semidWriters, lockWritersDeskription);
-    while (*waitingWriters > 0) {
-        unlock(semidWriters, lockWritersDeskription);
-        usleep(100);
-        lock(semidWriters, lockWritersDeskription);
-    }
-    unlock(semidWriters, lockWritersDeskription);
+void readerLock(
+    int semidOrder,   const char *orderDeskription,
+    int semidReaders, const char *readersDeskription,
+    int semidAccess,  const char *accessDeskription,
+    int semidWriters, const char *writersDeskription,
+    int *countReaders,
+    int *waitingWriters
+) {
+    /*
+     * These parameters belong to the previous waiting-writers protocol.
+     * They will be removed after the new scheme is tested.
+     */
+    (void)semidWriters;
+    (void)writersDeskription;
+    (void)waitingWriters;
 
     lock(semidOrder, orderDeskription);
     lock(semidReaders, readersDeskription);
-    if (*countReaders == 0) lock(semidAccess, accessDeskription);
+
+    if (*countReaders == 0) {
+        lock(semidAccess, accessDeskription);
+    }
+
     increment(countReaders);
+
     unlock(semidReaders, readersDeskription);
     unlock(semidOrder, orderDeskription);
 }
@@ -1229,12 +1252,14 @@ void* thread_readMenu(void* arg) {
     struct item* shared_memory_Products = args->shared_memory_Products;
 
     // reader lock:
-    readerLock(semidOrder, orderDeskription,
-               semidReaders, readersDeskription,
-               semidAccess, accessDeskription,
-               semidWriters, writersDeskription,
-               waitingWriters,
-               countReaders);
+    readerLock(
+        semidOrder, orderDeskription,
+        semidReaders, readersDeskription,
+        semidAccess, accessDeskription,
+        semidWriters, writersDeskription,
+        countReaders,
+        waitingWriters
+    );
 
     printf("%8.4f sec :     thread : Customer id: %d : I'm going to read the menu | pid = %d, ppid = %d\n",
                     timer(start), id, getpid(), getppid());
@@ -1322,12 +1347,14 @@ void* thread_readBuyingBoards(void* arg) {
     struct buyingBoard *shared_memory_BuyingBoard = args->shared_memory_BuyingBoard;
 
     // reader lock:
-    readerLock(semidOrder, orderDeskription,
-               semidReaders, readersDeskription,
-               semidAccess, accessDeskription,
-               semidWriters, writersDeskription,
-               waitingWriters,
-               countReaders);
+    readerLock(
+        semidOrder, orderDeskription,
+        semidReaders, readersDeskription,
+        semidAccess, accessDeskription,
+        semidWriters, writersDeskription,
+        countReaders,
+        waitingWriters
+    );
 
     printf("%8.4f sec :     thread : %s id: %d : I'm going to read Buying Boards | pid = %d, ppid = %d\n",
                     timer(start), accountType, id, getpid(), getppid());
@@ -1399,8 +1426,10 @@ void* thread_addBuyingBoard(void* arg) {
     pthread_exit(NULL);
 }
     //  writer problem:
+
 void* thread_threadMakeDone(void* arg) {
-    struct updateBuyingBoardsRequest* args = (struct updateBuyingBoardsRequest*)arg;
+    struct updateBuyingBoardsRequest* args =
+        (struct updateBuyingBoardsRequest*)arg;
 
     struct timespec start = args->start;
     int id = args->id;
@@ -1410,66 +1439,176 @@ void* thread_threadMakeDone(void* arg) {
     int semidOrder = args->semidOrder;
     char* orderDeskription = args->orderDeskription;
     int semidLockWriters = args->semidLockWriters;
-    const char *lockWritersDeskription = args->lockWritersDeskription;
-    int *waitingWriters = args->countWriters;
+    const char* lockWritersDeskription =
+        args->lockWritersDeskription;
+    int* waitingWriters = args->countWriters;
 
-    int *notDoneBoardId = args->notDoneBoardId;
-    int *notDoneAmount = args->notDoneAmount;
-    int *notDoneItemId = args->notDoneItemId; 
+    int* notDoneBoardId = args->notDoneBoardId;
+    int* notDoneAmount = args->notDoneAmount;
+    int* notDoneItemId = args->notDoneItemId;
 
-    int *shared_memory_CountBoards = args->shared_memory_CountBoards;
-    struct buyingBoard *shared_memory_BuyingBoard = args->shared_memory_BuyingBoard;
+    int* shared_memory_CountBoards =
+        args->shared_memory_CountBoards;
+    struct buyingBoard* shared_memory_BuyingBoard =
+        args->shared_memory_BuyingBoard;
+
+    writerLock(
+        semidOrder,
+        orderDeskription,
+        semidAccess,
+        accessDeskription,
+        semidLockWriters,
+        lockWritersDeskription,
+        waitingWriters
+    );
+
+    printf(
+        "%8.4f sec :     thread : Agent id: %d : "
+        "I'm going to make Order id: %d Done "
+        "| pid = %d, ppid = %d\n",
+        timer(start),
+        id,
+        *notDoneBoardId,
+        getpid(),
+        getppid()
+    );
 
     int currentCountBoards;
+    memcpy(
+        &currentCountBoards,
+        shared_memory_CountBoards,
+        sizeof(currentCountBoards)
+    );
 
-    // writer lock:
-    writerLock(semidOrder, orderDeskription,
-               semidAccess, accessDeskription,
-               semidLockWriters, lockWritersDeskription,
-               waitingWriters);
+    struct buyingBoard* currentBuyingBoards = malloc(
+        (size_t)currentCountBoards *
+        sizeof(*currentBuyingBoards)
+    );
 
-    printf("%8.4f sec :     thread : Agent id: %d : I'm going to make Order id: %d Done | pid = %d, ppid = %d\n",
-                    timer(start), id, *notDoneBoardId, getpid(), getppid());
+    if (currentBuyingBoards == NULL) {
+        fprintf(
+            stderr,
+            "Agent %d failed to allocate buying-board storage.\n",
+            id
+        );
 
-    usleep(100);
-    //sleep(1);
+        *notDoneBoardId = -1;
+        unlock(semidAccess, accessDeskription);
+        return NULL;
+    }
 
-    memcpy(&currentCountBoards, shared_memory_CountBoards, sizeof(int));
+    memcpy(
+        currentBuyingBoards,
+        shared_memory_BuyingBoard,
+        (size_t)currentCountBoards *
+        sizeof(*currentBuyingBoards)
+    );
 
-    struct buyingBoard* currentBuyingBoards = (struct buyingBoard*)malloc(currentCountBoards * sizeof(struct buyingBoard));
+    int requestedBoardId = *notDoneBoardId;
 
-    memcpy(currentBuyingBoards, shared_memory_BuyingBoard, currentCountBoards * sizeof(struct buyingBoard));
+    int completionResult = makeDone(
+        currentBuyingBoards,
+        &currentCountBoards,
+        requestedBoardId
+    );
 
-    int isDone = makeDone(currentBuyingBoards, &currentCountBoards, *notDoneBoardId);
-    if (isDone == 0) {
-        int tmp_boardId = *notDoneBoardId;
-        *notDoneBoardId = getNotDoneProductId(currentBuyingBoards, &currentCountBoards);
-        if (*notDoneBoardId == -1) {
-            printf("%8.4f sec :     thread : Agent id: %d : I've found that the Order id: %d is already Done and there are any New Order | pid = %d, ppid = %d\n",
-                            timer(start), id, tmp_boardId, getpid(), getppid());
+    if (completionResult == 0) {
+        /*
+         * Another sales agent completed the order after both agents
+         * had read the same snapshot. Revalidate while still holding
+         * exclusive writer access and process another pending order.
+         */
+        int nextBoardId = getNotDoneProductId(
+            currentBuyingBoards,
+            &currentCountBoards
+        );
+
+        if (nextBoardId == -1) {
+            printf(
+                "%8.4f sec :     thread : Agent id: %d : "
+                "Order id: %d was already done and no pending "
+                "orders remain | pid = %d, ppid = %d\n",
+                timer(start),
+                id,
+                requestedBoardId,
+                getpid(),
+                getppid()
+            );
+
+            *notDoneBoardId = -1;
         } else {
-            *notDoneAmount = getAmountByBoardId(currentBuyingBoards, &currentCountBoards, *notDoneBoardId);
-            isDone = makeDone(currentBuyingBoards, &currentCountBoards, *notDoneBoardId);
+            int nextAmount = getAmountByBoardId(
+                currentBuyingBoards,
+                &currentCountBoards,
+                nextBoardId
+            );
 
-            if (isDone != -1) printf("%8.4f sec :     thread : Agent id: %d : Error Update Done | pid = %d, ppid = %d", timer(start), id, getpid(), getppid());
-            else {
-                *notDoneItemId = getItemIdByBoardId(currentBuyingBoards, &currentCountBoards, *notDoneBoardId);
-                printf("%8.4f sec :   thread : Agent id: %d : I've found that the Order id: %d is already Done but I've found the New Order ID : %d : item : %d : amount : %d | pid = %d, ppid = %d\n",
-                                timer(start), id, tmp_boardId, *notDoneBoardId, *notDoneItemId, *notDoneAmount, getpid(), getppid());
+            int nextItemId = getItemIdByBoardId(
+                currentBuyingBoards,
+                &currentCountBoards,
+                nextBoardId
+            );
+
+            int nextCompletionResult = makeDone(
+                currentBuyingBoards,
+                &currentCountBoards,
+                nextBoardId
+            );
+
+            if (nextCompletionResult == 1) {
+                *notDoneBoardId = nextBoardId;
+                *notDoneAmount = nextAmount;
+                *notDoneItemId = nextItemId;
+
+                printf(
+                    "%8.4f sec :     thread : Agent id: %d : "
+                    "Order id: %d was already done; processed "
+                    "pending Order id: %d, item: %d, amount: %d "
+                    "| pid = %d, ppid = %d\n",
+                    timer(start),
+                    id,
+                    requestedBoardId,
+                    nextBoardId,
+                    nextItemId,
+                    nextAmount,
+                    getpid(),
+                    getppid()
+                );
+            } else {
+                fprintf(
+                    stderr,
+                    "Agent %d failed to complete fallback "
+                    "order %d.\n",
+                    id,
+                    nextBoardId
+                );
+
+                *notDoneBoardId = -1;
             }
         }
-    } else if (isDone == -1) printf("%8.4f sec :     thread : Agent id: %d : Error : I havent found board ID : %d in the Boards List | pid = %d, ppid = %d",
-                                            timer(start), id, *notDoneBoardId, getpid(), getppid());
-    
+    } else if (completionResult == -1) {
+        fprintf(
+            stderr,
+            "Agent %d could not find order %d.\n",
+            id,
+            requestedBoardId
+        );
 
-    memcpy(shared_memory_BuyingBoard, currentBuyingBoards, currentCountBoards * sizeof(struct buyingBoard));
+        *notDoneBoardId = -1;
+    }
+
+    memcpy(
+        shared_memory_BuyingBoard,
+        currentBuyingBoards,
+        (size_t)currentCountBoards *
+        sizeof(*currentBuyingBoards)
+    );
 
     free(currentBuyingBoards);
 
-    // writer unlock:
     unlock(semidAccess, accessDeskription);
 
-    pthread_exit(NULL);
+    return NULL;
 }
 
 //=========Others==================================================
@@ -1542,6 +1681,18 @@ int isInteger(const char *str) {
 }
 
 void readArguments(int *countProducts, int *countAgents, int *countCustomers, int argc, char *argv[]) {
+    if (argc == 1) {
+        return;
+    }
+
+    if (argc != 4) {
+        fprintf(
+            stderr,
+            "Usage: %s [products sales-agents customers]\n",
+            argv[0]
+        );
+        exit(EXIT_FAILURE);
+    }
 
     if (isInteger(argv[1])) {
         int countProductsReceived = atoi(argv[1]);
@@ -1556,10 +1707,14 @@ void readArguments(int *countProducts, int *countAgents, int *countCustomers, in
 
     if (isInteger(argv[2])) {
         int countAgentsReceived = atoi(argv[2]);
-        if (countAgentsReceived > 0 && countAgentsReceived < 4) {
+        if (countAgentsReceived > 0 && countAgentsReceived <= 4) {
             *countAgents = countAgentsReceived;
         } else {
-            printf("Argument 2 = %d : amount of Sales Agents can not be less than 1 and more than 3 : Default value : 2\n", countAgentsReceived);
+            printf(
+                "Argument 2 = %d : amount of Sales Agents can not be "
+                "less than 1 and more than 4 : Default value : 2\n",
+                countAgentsReceived
+            );
         }
     } else {
         printf("Argument 2 is not a valid integer.\n");
