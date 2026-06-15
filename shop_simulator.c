@@ -186,9 +186,38 @@ int main(int argc, char const *argv[]) {
     int countCustomers = 4;
     int countAgents = 2;
     int childCount = 0;
-    pid_t childPIDs[countCustomers + countAgents];
 
-    readArguments(&countProducts, &countAgents, &countCustomers, argc, (char **)argv);
+    readArguments(
+        &countProducts,
+        &countAgents,
+        &countCustomers,
+        argc,
+        (char **)argv
+    );
+
+    if (countProducts < 1 || countProducts > 10) {
+        fprintf(stderr, "Product count must be between 1 and 10.\n");
+        return EXIT_FAILURE;
+    }
+
+    if (countAgents < 1) {
+        fprintf(stderr, "Sales agent count must be greater than zero.\n");
+        return EXIT_FAILURE;
+    }
+
+    if (countCustomers < 1) {
+        fprintf(stderr, "Customer count must be greater than zero.\n");
+        return EXIT_FAILURE;
+    }
+
+    size_t childCapacity = (size_t)countCustomers + (size_t)countAgents;
+
+    pid_t *childPIDs = calloc(childCapacity, sizeof(*childPIDs));
+
+    if (childPIDs == NULL) {
+        perror("Failed to allocate child PID storage");
+        return EXIT_FAILURE;
+    }
 
     srand(time(NULL));
 
@@ -742,6 +771,8 @@ int main(int argc, char const *argv[]) {
     removeSemaphore(semidReadersBuyingBoard,"rm_ReadersBuyingBoard");
     removeSemaphore(semidOrderBuyingBoard,  "rm_OrderBuyingBoard");
     removeSemaphore(semidWritersBuyingBoard,"rm_WritersBuyingBoard");
+
+    free(childPIDs);
 
     return 0;
 }
