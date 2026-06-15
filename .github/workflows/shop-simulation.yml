@@ -1,0 +1,147 @@
+name: Shop Simulation
+
+on:
+  push:
+    branches:
+      - main
+      - feature/shop-simulation-demo
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      products:
+        description: "Number of products (1-10)"
+        required: true
+        default: 5
+        type: number
+
+      sales_agents:
+        description: "Number of sales agents (1-4)"
+        required: true
+        default: 2
+        type: number
+
+      customers:
+        description: "Number of customers (1-10)"
+        required: true
+        default: 4
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build simulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile with GCC
+        run: |
+          gcc \
+            -std=gnu11 \
+            -Wall \
+            -Wextra \
+            -Wpedantic \
+            -Werror \
+            -pthread \
+            shop_simulator.c \
+            -o shop-simulator
+
+      - name: Upload compiled simulator
+        uses: actions/upload-artifact@v7
+        with:
+          name: shop-simulator-binary
+          path: shop-simulator
+          retention-days: 7
+
+  run:
+    name: Run simulation
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Download compiled simulator
+        uses: actions/download-artifact@v8
+        with:
+          name: shop-simulator-binary
+
+      - name: Make simulator executable
+        run: chmod +x shop-simulator
+
+      - name: Select simulation arguments
+        id: arguments
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            products="${{ inputs.products }}"
+            sales_agents="${{ inputs.sales_agents }}"
+            customers="${{ inputs.customers }}"
+          else
+            products=5
+            sales_agents=2
+            customers=4
+          fi
+
+          if (( products < 1 || products > 10 )); then
+            echo "Products must be between 1 and 10."
+            exit 1
+          fi
+
+          if (( sales_agents < 1 || sales_agents > 4 )); then
+            echo "Sales agents must be between 1 and 4."
+            exit 1
+          fi
+
+          if (( customers < 1 || customers > 10 )); then
+            echo "Customers must be between 1 and 10."
+            exit 1
+          fi
+
+          echo "products=$products" >> "$GITHUB_OUTPUT"
+          echo "sales_agents=$sales_agents" >> "$GITHUB_OUTPUT"
+          echo "customers=$customers" >> "$GITHUB_OUTPUT"
+
+          echo "Selected configuration:"
+          echo "  Products: $products"
+          echo "  Sales agents: $sales_agents"
+          echo "  Customers: $customers"
+
+      - name: Run shop simulation
+        shell: bash
+        run: |
+          set -o pipefail
+
+          timeout 45s stdbuf -oL -eL \
+            ./shop-simulator \
+            "${{ steps.arguments.outputs.products }}" \
+            "${{ steps.arguments.outputs.sales_agents }}" \
+            "${{ steps.arguments.outputs.customers }}" \
+            2>&1 | tee simulation.log
+
+      - name: Verify simulation result
+        shell: bash
+        run: |
+          grep -q "Simulation is finished" simulation.log
+          grep -q "Result of the Simulation" simulation.log
+          grep -q "Total income" simulation.log
+          grep -q "Total orders" simulation.log
+
+          echo "Simulation completed and produced the expected summary."
+
+      - name: Upload simulation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shop-simulation-log
+          path: simulation.log
+          if-no-files-found: warn
+          retention-days: 14
