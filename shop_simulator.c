@@ -12,8 +12,12 @@
 #include <pthread.h>
 #include <signal.h>
 #include <ctype.h>
-#include <string.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+static const char *const IPC_RUNTIME_DIR = ".runtime";
+static const char *const IPC_TOKEN_FILE = ".runtime/ipc.token";
 
 //======== Semaphores ==================================================
 key_t getKey(const char *pathname, int proj_id);
@@ -164,6 +168,7 @@ void signalHandler(int sig) {
 }
 
 //======== Others =================================================
+void prepareIpcTokenFile(void);
 void increment(int *value);
 void decrement(int *value);
 int getRandomNum(int minNum, int maxNum);
@@ -187,19 +192,21 @@ int main(int argc, char const *argv[]) {
 
     srand(time(NULL));
 
-        //  keys :
-    key_t keyShMemBuyingBoard = getKey("keys/keyShMemBuyingBoard.txt", 150);
-    key_t keyShMemCountBoards = getKey("keys/keyShMemCountBoards.txt", 151);
-    key_t keyAccessBuyingBoard = getKey("keys/keyAccessBuyingBoard.txt", 152);
-    key_t keyReadersBuyingBoard = getKey("keys/keyReadersBuyingBoard.txt", 153);
-    key_t keyOrderBuyingBoard = getKey("keys/keyOrderBuyingBoard.txt", 154);
-    key_t keyWritersBuyingBoard = getKey("keys/keyLockWritersBuyingBoard.txt", 155);
+    // Prepare the runtime file used to generate System V IPC keys.
+    prepareIpcTokenFile();
 
-    key_t keyProducts = getKey("keys/keyShMemProducts.txt", 160);
-    key_t keyAccessProducts = getKey("keys/keyAccessProducts.txt", 161);
-    key_t keyReadersProducts = getKey("keys/keyReadersProducts.txt", 162);
-    key_t keyOrderProducts = getKey("keys/keyOrderProducts.txt", 163);
-    key_t keyWritersProducts = getKey("keys/keyLockWritersProducts.txt", 164);
+    key_t keyShMemBuyingBoard = getKey(IPC_TOKEN_FILE, 150);
+    key_t keyShMemCountBoards = getKey(IPC_TOKEN_FILE, 151);
+    key_t keyAccessBuyingBoard = getKey(IPC_TOKEN_FILE, 152);
+    key_t keyReadersBuyingBoard = getKey(IPC_TOKEN_FILE, 153);
+    key_t keyOrderBuyingBoard = getKey(IPC_TOKEN_FILE, 154);
+    key_t keyWritersBuyingBoard = getKey(IPC_TOKEN_FILE, 155);
+
+    key_t keyProducts = getKey(IPC_TOKEN_FILE, 160);
+    key_t keyAccessProducts = getKey(IPC_TOKEN_FILE, 161);
+    key_t keyReadersProducts = getKey(IPC_TOKEN_FILE, 162);
+    key_t keyOrderProducts = getKey(IPC_TOKEN_FILE, 163);
+    key_t keyWritersProducts = getKey(IPC_TOKEN_FILE, 164);
 
     printf("\nProject info:\n\nCustomers       : %2d persons\nSales Agent     : %2d persons\nCount Products  : %2d items\nSimulation time : %2d sec\n\n",
                         countCustomers, countAgents, countProducts, simulationTime);
@@ -1366,6 +1373,22 @@ void* thread_threadMakeDone(void* arg) {
 }
 
 //=========Others==================================================
+void prepareIpcTokenFile(void) {
+    if (mkdir(IPC_RUNTIME_DIR, 0700) == -1 && errno != EEXIST) {
+        perror("Failed to create IPC runtime directory");
+        exit(EXIT_FAILURE);
+    }
+
+    int tokenFile = open(IPC_TOKEN_FILE, O_CREAT | O_RDWR, 0600);
+
+    if (tokenFile == -1) {
+        perror("Failed to create IPC token file");
+        exit(EXIT_FAILURE);
+    }
+
+    close(tokenFile);
+}
+
 void increment(int* value) {
     (*value)++;
 }
