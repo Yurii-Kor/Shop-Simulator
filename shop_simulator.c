@@ -19,6 +19,14 @@
 static const char *const IPC_RUNTIME_DIR = ".runtime";
 static const char *const IPC_TOKEN_FILE = ".runtime/ipc.token";
 
+struct readersWritersState {
+    int buyingBoardReaders;
+    int buyingBoardWaitingWriters;
+    int productReaders;
+    int productWaitingWriters;
+};
+
+
 //======== Semaphores ==================================================
 key_t getKey(const char *pathname, int proj_id);
 int createSemaphore(key_t key, const char *semName);
@@ -162,9 +170,8 @@ void* thread_threadMakeDone(void* arg);
 //======== Sygnal for subprocess =================================
 volatile sig_atomic_t stop = 0;
 void signalHandler(int sig) {
+    (void)sig;
     stop = 1;
-    printf("Process %d received signal %d, terminating...\n", getpid(), sig);
-    exit(0);
 }
 
 //======== Others =================================================
@@ -200,12 +207,12 @@ int main(int argc, char const *argv[]) {
         return EXIT_FAILURE;
     }
 
-    if (countAgents < 1) {
+    if (countAgents < 1 || countAgents > 4) {
         fprintf(stderr, "Sales agent count must be greater than zero.\n");
         return EXIT_FAILURE;
     }
 
-    if (countCustomers < 1) {
+    if (countCustomers < 1 || countCustomers > 10) {
         fprintf(stderr, "Customer count must be greater than zero.\n");
         return EXIT_FAILURE;
     }
@@ -236,6 +243,8 @@ int main(int argc, char const *argv[]) {
     key_t keyReadersProducts = getKey(IPC_TOKEN_FILE, 162);
     key_t keyOrderProducts = getKey(IPC_TOKEN_FILE, 163);
     key_t keyWritersProducts = getKey(IPC_TOKEN_FILE, 164);
+
+    key_t keyReadersWritersState = getKey(IPC_TOKEN_FILE, 170);
 
     printf("\nProject info:\n\nCustomers       : %2d persons\nSales Agent     : %2d persons\nCount Products  : %2d items\nSimulation time : %2d sec\n\n",
                         countCustomers, countAgents, countProducts, simulationTime);
@@ -291,21 +300,52 @@ int main(int argc, char const *argv[]) {
 
     memcpy(shared_memory_CountBoards, &countBoards, sizeof(int));
 
+    int shmidReadersWritersState = shmget(
+        keyReadersWritersState,
+        sizeof(struct readersWritersState),
+        IPC_CREAT | 0666
+    );
+
+    if (shmidReadersWritersState == -1) {
+        perror("shmget_create_ReadersWritersState");
+        exit(EXIT_FAILURE);
+    }
+
+    struct readersWritersState *shared_memory_ReadersWritersState =
+        (struct readersWritersState *)shmat(
+            shmidReadersWritersState,
+            NULL,
+            0
+        );
+
+    if (shared_memory_ReadersWritersState == (void *)-1) {
+        perror("shmat_ReadersWritersState");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(
+        shared_memory_ReadersWritersState,
+        0,
+        sizeof(*shared_memory_ReadersWritersState)
+    );
+
+    int *countReadersBuyingBoard =
+        &shared_memory_ReadersWritersState->buyingBoardReaders;
+
+    int *countWritersBuyingBoard =
+        &shared_memory_ReadersWritersState->buyingBoardWaitingWriters;
+
+    int *countReadersProducts =
+        &shared_memory_ReadersWritersState->productReaders;
+
+    int *countWritersProducts =
+        &shared_memory_ReadersWritersState->productWaitingWriters;
+
         //  Semaphores :
-    int countReadersBuyingBoard = 0;
-    int countWritersBuyingBoard = 0;
-
-    int semidAccessBuyingBoard = createSemaphore(keyAccessBuyingBoard, "AccessBuyingBoard");
-    unlock(semidAccessBuyingBoard, "AccessBuyingBoard");
-
+    int semidAccessBuyingBoard  = createSemaphore(keyAccessBuyingBoard, "AccessBuyingBoard");
     int semidReadersBuyingBoard = createSemaphore(keyReadersBuyingBoard, "ReadersBuyingBoard");
-    unlock(semidReadersBuyingBoard, "ReadersBuyingBoard");
-
-    int semidOrderBuyingBoard = createSemaphore(keyOrderBuyingBoard, "OrderBuyingBoard");
-    unlock(semidOrderBuyingBoard, "OrderBuyingBoard");
-
+    int semidOrderBuyingBoard   = createSemaphore(keyOrderBuyingBoard, "OrderBuyingBoard");
     int semidWritersBuyingBoard = createSemaphore(keyWritersBuyingBoard, "WritersBuyingBoard");
-    unlock(semidWritersBuyingBoard, "WritersBuyingBoard");
 
     //=========Products==================================================
         //  Intialize :
@@ -329,20 +369,10 @@ int main(int argc, char const *argv[]) {
     free(products);
 
         //  Semaphores :
-    int countReadersProducts = 0;
-    int countWritersProducts = 0;
-
-    int semidAccessProducts = createSemaphore(keyAccessProducts, "AccessProducts");
-    unlock(semidAccessProducts, "AccessProducts");
-
+    int semidAccessProducts  = createSemaphore(keyAccessProducts, "AccessProducts");
     int semidReadersProducts = createSemaphore(keyReadersProducts, "ReadersProducts");
-    unlock(semidReadersProducts, "ReadersProducts");
-
-    int semidOrderProducts = createSemaphore(keyOrderProducts, "OrderProducts");
-    unlock(semidOrderProducts, "OrderProducts");
-
+    int semidOrderProducts   = createSemaphore(keyOrderProducts, "OrderProducts");
     int semidWritersProducts = createSemaphore(keyWritersProducts, "WritersProducts");
-    unlock(semidWritersProducts, "WritersProducts");
 
     //========Check shared memory=====================================
 
@@ -410,8 +440,8 @@ int main(int argc, char const *argv[]) {
                             request0->orderDeskription = "OrderProducts_readMenu";
                             request0->semidWriters = semidWritersProducts;
                             request0->writersDeskription = "WritersProducts_readMenu";
-                            request0->countWriters = &countWritersProducts;
-                            request0->countReaders = &countReadersProducts;
+                            request0->countWriters = countWritersProducts;
+                            request0->countReaders = countReadersProducts;
 
                             request0->countProducts = &countProducts;
                             request0->currentProducts = currentProducts;
@@ -450,8 +480,8 @@ int main(int argc, char const *argv[]) {
                             request1->orderDeskription = "OrderBuyingBoards_readBuyingBoards";
                             request1->semidWriters = semidWritersBuyingBoard;
                             request1->writersDeskription = "WritersBuyingBoards_readBuyingBoards";
-                            request1->countWriters = &countWritersBuyingBoard;
-                            request1->countReaders = &countReadersBuyingBoard;
+                            request1->countWriters = countWritersBuyingBoard;
+                            request1->countReaders = countReadersBuyingBoard;
 
                             request1->countBoards = shared_memory_CountBoards;
                             request1->currentCountBoards = &currentCountBoards;
@@ -511,7 +541,7 @@ int main(int argc, char const *argv[]) {
                             request2->orderDeskription = "OrderBuyingBoards_addBuyingBoard";
                             request2->semidLockWriters = semidWritersBuyingBoard;
                             request2->lockWritersDeskription = "LockWritersBuyingBoards_addBuyingBoard";
-                            request2->countWriters = &countWritersBuyingBoard;
+                            request2->countWriters = countWritersBuyingBoard;
 
                             request2->itemId = randomItem;
                             request2->amountOrder = randomAmount;
@@ -583,7 +613,7 @@ int main(int argc, char const *argv[]) {
                             request0->orderDeskription = "OrderProducts_updateProducts";
                             request0->semidLockWriters = semidWritersProducts;
                             request0->lockWritersDeskription = "LockWritersProducts_updateProducts";
-                            request0->countWriters = &countWritersProducts;
+                            request0->countWriters = countWritersProducts;
 
                             request0->countProducts = &countProducts;
                             request0->itemId = notDoneItemId;
@@ -621,8 +651,8 @@ int main(int argc, char const *argv[]) {
                             request1->orderDeskription = "OrderBuyingBoards_readBuyingBoards";
                             request1->semidWriters = semidWritersBuyingBoard;
                             request1->writersDeskription = "WritersBuyingBoards_readBuyingBoards";
-                            request1->countWriters = &countWritersBuyingBoard;
-                            request1->countReaders = &countReadersBuyingBoard;
+                            request1->countWriters = countWritersBuyingBoard;
+                            request1->countReaders = countReadersBuyingBoard;
 
                             request1->countBoards = shared_memory_CountBoards;
                             request1->currentCountBoards = &currentCountBoards;
@@ -667,7 +697,7 @@ int main(int argc, char const *argv[]) {
                             request2->orderDeskription = "OrderBuyingBoards_makeDone";
                             request2->semidLockWriters = semidWritersBuyingBoard;
                             request2->lockWritersDeskription = "LockWritersBuyingBoards_makeDone";
-                            request2->countWriters = &countWritersBuyingBoard;
+                            request2->countWriters = countWritersBuyingBoard;
 
                             request2->notDoneBoardId = &notDoneBoardId;
                             request2->notDoneAmount = &notDoneAmount;
@@ -762,6 +792,8 @@ int main(int argc, char const *argv[]) {
     shmctl(shmidProducts, IPC_RMID, NULL);
     shmdt(shared_memory_CountBoards);
     shmctl(shmidCountBoards, IPC_RMID, NULL);
+    shmdt(shared_memory_ReadersWritersState);
+    shmctl(shmidReadersWritersState, IPC_RMID, NULL);
 
     removeSemaphore(semidAccessProducts,    "rm_AccessProducts");
     removeSemaphore(semidReadersProducts,   "rm_ReadersProducts");
@@ -790,45 +822,82 @@ key_t getKey(const char *pathname, int proj_id) {
 
 int createSemaphore(key_t key, const char *semName) {
     int semid = semget(key, 1, IPC_CREAT | 0666);
+
     if (semid == -1) {
-        perror(strcat("semget ", semName));
-        exit(1);
+        fprintf(
+            stderr,
+            "semget %s failed: %s\n",
+            semName,
+            strerror(errno)
+        );
+        exit(EXIT_FAILURE);
     }
+
+    if (semctl(semid, 0, SETVAL, 1) == -1) {
+        fprintf(
+            stderr,
+            "semctl SETVAL %s failed: %s\n",
+            semName,
+            strerror(errno)
+        );
+        exit(EXIT_FAILURE);
+    }
+
     return semid;
 }
 
 void removeSemaphore(int semid, const char *semName) {
     if (semctl(semid, 0, IPC_RMID) == -1) {
-        perror(strcat("semctl IPC_RMID ", semName));
-        exit(1);
+        fprintf(
+            stderr,
+            "semctl IPC_RMID %s failed: %s\n",
+            semName,
+            strerror(errno)
+        );
     }
 }
 
 void lock(int semid, const char *semName) {
-    struct sembuf sembuf_operation;
-    sembuf_operation.sem_num = 0;
-    sembuf_operation.sem_op = -1;
-    sembuf_operation.sem_flg = IPC_NOWAIT;
+    struct sembuf operation = {
+        .sem_num = 0,
+        .sem_op = -1,
+        .sem_flg = 0
+    };
 
-    if (semop(semid, &sembuf_operation, 1) == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            //printf("Semaphore %s is already locked\n", semName);
-        } else {
-            perror(strcat("semop ", semName));
-            exit(1);
+    while (semop(semid, &operation, 1) == -1) {
+        if (errno == EINTR) {
+            continue;
         }
+
+        fprintf(
+            stderr,
+            "semop lock %s failed: %s\n",
+            semName,
+            strerror(errno)
+        );
+        exit(EXIT_FAILURE);
     }
 }
 
 void unlock(int semid, const char *semName) {
-    struct sembuf sembuf_operation;
-    sembuf_operation.sem_num = 0;
-    sembuf_operation.sem_op = 1;
-    sembuf_operation.sem_flg = 0;
+    struct sembuf operation = {
+        .sem_num = 0,
+        .sem_op = 1,
+        .sem_flg = 0
+    };
 
-    if (semop(semid, &sembuf_operation, 1) == -1) {
-        perror(strcat("semop ", semName));
-        exit(1);
+    while (semop(semid, &operation, 1) == -1) {
+        if (errno == EINTR) {
+            continue;
+        }
+
+        fprintf(
+            stderr,
+            "semop unlock %s failed: %s\n",
+            semName,
+            strerror(errno)
+        );
+        exit(EXIT_FAILURE);
     }
 }
 
